@@ -3,4 +3,4 @@
 from .report import GENESIS, LaneResult, aggregate, canonical, render_markdown, verify_chain
 
 __all__ = ["GENESIS", "LaneResult", "aggregate", "canonical", "render_markdown", "verify_chain"]
-__version__ = "0.1.0"
+__version__ = "0.2.0"
