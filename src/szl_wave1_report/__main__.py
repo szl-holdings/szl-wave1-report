@@ -3,9 +3,36 @@ import argparse
 from dataclasses import asdict, is_dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
+import tempfile
 
 from .report import aggregate, canonical, render_markdown
+
+
+def publish_outputs(outputs):
+    """Stage every output, then publish without replacing any existing path."""
+    staged = []
+    published = []
+    try:
+        for destination, content in outputs:
+            descriptor, temporary = tempfile.mkstemp(prefix=".szl-wave-", dir=destination.parent)
+            staged.append((Path(temporary), destination))
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                stream.write(content)
+                stream.flush()
+                os.fsync(stream.fileno())
+        for temporary, destination in staged:
+            os.link(temporary, destination)  # fails if another process won the destination
+            published.append((temporary, destination))
+    except BaseException:
+        for temporary, destination in reversed(published):
+            if destination.exists() and os.path.samefile(temporary, destination):
+                destination.unlink()  # remove only this invocation's partial publication
+        raise
+    finally:
+        for temporary, _ in staged:
+            temporary.unlink(missing_ok=True)
 
 
 def load_receipts(path):
@@ -45,11 +72,10 @@ def main(argv=None):
         wire = json.loads(json.dumps(report, default=lambda value: asdict(value)
                                      if is_dataclass(value) else str(value), allow_nan=False))
         wire["report_sha256"] = hashlib.sha256(canonical(wire).encode()).hexdigest()
-        with args.output.open("x", encoding="utf-8") as destination:
-            destination.write(json.dumps(wire, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+        outputs = [(args.output, json.dumps(wire, indent=2, ensure_ascii=False, allow_nan=False) + "\n")]
         if args.markdown:
-            with args.markdown.open("x", encoding="utf-8") as destination:
-                destination.write(render_markdown(report))
+            outputs.append((args.markdown, render_markdown(report)))
+        publish_outputs(outputs)
         print(json.dumps({"report_status": report["report_status"],
                           "report_sha256": wire["report_sha256"],
                           "output": str(args.output)}))

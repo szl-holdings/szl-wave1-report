@@ -36,6 +36,9 @@ JSONL chains. Destination files must be new. Invalid chains produce an INVALID
 report and a nonzero exit; malformed files fail before a report is produced.
 The JSON includes the full terminal hashes, the full master hash over their
 sorted mapping, and `report_sha256` over canonical JSON without that field.
+Both requested outputs are staged first and published without replacement;
+publication failure rolls back only this invocation's files, preserving any
+concurrent writer. This requires ordinary local hard-link support.
 
 `report_status=VALID` means **chain integrity only**. The separate coverage field
 lists missing harnesses, and `wave1_acceptance=NOT_EVALUATED` deliberately does
@@ -45,6 +48,9 @@ origins remain `UNVERIFIED_SOURCE_RECEIPT`. Calibration scores are caller-input
 measurements, not proof of a particular model execution. These unsigned chains
 need an independently retained terminal anchor to detect a full rehash or a
 valid-prefix truncation. No model authenticity or independent witness is implied.
+Duplicate chains and mismatched hashed harness declarations are rejected.
+Missing hashed identity metadata yields `IDENTITY_UNVERIFIED` rather than full
+four-harness coverage; source declarations are not authenticated identities.
 
 ```python
 import json, pathlib

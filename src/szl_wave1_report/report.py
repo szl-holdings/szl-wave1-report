@@ -4,7 +4,7 @@ import hashlib, json, math
 from html import escape
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Tuple
-from .native import schema, verify
+from .native import declared_harness, schema, verify
 
 GENESIS = "0" * 64
 REQUIRED_HARNESSES = ("szl-calibration", "szl-engine-bench", "szl-quant-bench",
@@ -113,8 +113,18 @@ def aggregate(chains: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
         ok, detail = verify_chain(chain)
         if not ok:
             return {"report_status": "INVALID", "reason": f"{name}: {detail}"}
-        harness_reports[name] = {"chain": detail, "receipts": len(chain)}
-        terminal_hashes[name] = chain[-1][schema(chain[-1])]
+        terminal = chain[-1][schema(chain[-1])]
+        if terminal in terminal_hashes.values():
+            return {"report_status": "INVALID", "reason": f"{name}: duplicate source chain under another harness"}
+        try:
+            identities = {declared_harness(receipt) for receipt in chain} - {None}
+            if identities and identities != {name}:
+                raise ValueError("hashed harness declaration does not match supplied name")
+        except (TypeError, ValueError) as exc:
+            return {"report_status": "INVALID", "reason": f"{name}: {exc}"}
+        harness_reports[name] = {"chain": detail, "receipts": len(chain),
+                                 "identity": "HASHED_SOURCE_DECLARATION" if identities else "UNVERIFIED"}
+        terminal_hashes[name] = terminal
         for r in chain:
             try:
                 lanes.extend(_flatten(name, r))
@@ -123,8 +133,13 @@ def aggregate(chains: Dict[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
     master_input = canonical({k: terminal_hashes[k] for k in sorted(terminal_hashes)})
     master_hash = hashlib.sha256(master_input.encode("utf-8")).hexdigest()
     missing = sorted(set(REQUIRED_HARNESSES) - set(chains))
+    unverified = sorted(name for name in REQUIRED_HARNESSES if name in harness_reports
+                        and harness_reports[name]["identity"] == "UNVERIFIED")
     return {"report_status": "VALID", "harnesses": harness_reports,
-            "coverage_status": "INCOMPLETE" if missing else "ALL_FOUR_CHAINS_PRESENT",
+            "coverage_status": "INCOMPLETE" if missing else (
+                "IDENTITY_UNVERIFIED" if unverified else "ALL_FOUR_DECLARED_HARNESSES_PRESENT"),
+            "unverified_harness_identities": unverified,
+            "identity_authority": "HASHED_SOURCE_DECLARATION_NOT_ISSUER_AUTHENTICATION",
             "missing_harnesses": missing, "wave1_acceptance": "NOT_EVALUATED",
             "authority": "INTEGRITY_ONLY_NOT_INDEPENDENT_EVIDENCE",
             "terminal_chain_hashes": terminal_hashes, "master_receipt_hash": master_hash,
@@ -147,7 +162,7 @@ def render_markdown(report: Dict[str, Any]) -> str:
              "Missing harnesses: " + (", ".join(report["missing_harnesses"]) or "none"), "",
              "## Chains", ""]
     for name, info in sorted(report["harnesses"].items()):
-        lines.append(f"- `{_md(name)}` — {_md(info['chain'])}")
+        lines.append(f"- `{_md(name)}` — {_md(info['chain'])}; identity {_md(info['identity'])}")
     lines += ["", "## Measured (source-reported)", "", "| Harness | Lane | Metrics | Evidence source |", "|---|---|---|---|"]
     for l in report["measured_lanes"]:
         m = ", ".join(f"{_md(k)}={_md(v)}" for k, v in sorted(l.metrics.items()))

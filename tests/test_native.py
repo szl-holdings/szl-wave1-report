@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from szl_wave1_report.__main__ import main
+from szl_wave1_report.__main__ import main, publish_outputs
 from szl_wave1_report.native import CALIBRATION_GENESIS, encoded
 from szl_wave1_report.report import aggregate, canonical, render_markdown, verify_chain
 
@@ -135,6 +135,53 @@ def test_markdown_escapes_source_formatting():
     {"state": "MEASURED", "status": "INVALID", "curve": [{"bits": 4, "cosine": .99}]},
 ])
 def test_invalid_parent_or_row_never_promoted(run):
-    report = aggregate({"harness": [native(run)]})
+    name = "szl-engine-bench" if run.get("type") == "engine_bench" else "harness"
+    report = aggregate({name: [native(run)]})
     assert not report["measured_lanes"]
     assert report["invalid_lanes"]
+
+
+def test_same_chain_cannot_count_as_four_harnesses():
+    record = native({"state": "MEASURED", "metrics": {"mrr": .6}})
+    names = ("szl-calibration", "szl-retrieval-bench", "szl-engine-bench", "szl-quant-bench")
+    assert aggregate({name: [record] for name in names})["report_status"] == "INVALID"
+
+
+def test_declared_identity_cannot_be_relabelled():
+    record = native({"type": "engine_bench", "verdict": {"state": "BLOCKED"}})
+    report = aggregate({"szl-quant-bench": [record]})
+    assert report["report_status"] == "INVALID"
+    assert "declaration" in report["reason"]
+
+
+def test_unknown_identity_does_not_become_verified_coverage():
+    names = ("szl-calibration", "szl-retrieval-bench", "szl-engine-bench", "szl-quant-bench")
+    report = aggregate({name: [native({"state": "BLOCKED", "note": name})] for name in names})
+    assert report["coverage_status"] == "IDENTITY_UNVERIFIED"
+    assert len(report["unverified_harness_identities"]) == 4
+
+
+def test_missing_markdown_parent_leaves_no_partial_output(tmp_path):
+    output = tmp_path / "report.json"
+    with pytest.raises(OSError):
+        publish_outputs([(output, "{}"), (tmp_path / "missing" / "report.md", "report")])
+    assert not output.exists()
+    assert not list(tmp_path.glob(".szl-wave-*"))
+
+
+def test_second_publication_failure_rolls_back_only_owned_file(tmp_path, monkeypatch):
+    import os
+    original_link = os.link
+    output, markdown = tmp_path / "report.json", tmp_path / "report.md"
+
+    def concurrent_file(source, destination):
+        if destination == markdown:
+            markdown.write_text("another writer", encoding="utf-8")
+        original_link(source, destination)
+
+    monkeypatch.setattr(os, "link", concurrent_file)
+    with pytest.raises(FileExistsError):
+        publish_outputs([(output, "{}"), (markdown, "report")])
+    assert not output.exists()
+    assert markdown.read_text(encoding="utf-8") == "another writer"
+    assert not list(tmp_path.glob(".szl-wave-*"))
