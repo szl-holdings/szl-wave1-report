@@ -11,6 +11,11 @@ This package verifies every chain, then consolidates the results into one
 report with a single **master receipt hash** — the chain-of-chains. If any
 source chain is broken, the whole report is `INVALID`. No partial credit.
 
+Version 0.2 reads the actual stdlib `self_hash`/`run` records, calibration's
+`hash`/`payload` records (with its distinct genesis), and legacy flat
+`chain_hash` records. It verifies each format with its native canonicalization;
+it never rewrites or re-signs source records to make them pass.
+
 ## Doctrine
 
 - **Fail closed.** One tampered or broken chain voids the report; the reason names the harness.
@@ -23,7 +28,23 @@ source chain is broken, the whole report is `INVALID`. No partial credit.
 ```bash
 pip install -e . pytest
 python -m pytest tests/ -q
+python -m szl_wave1_report --chain szl-retrieval-bench=retrieval.json --chain szl-calibration=calibration.jsonl --output wave.json --markdown wave.md
 ```
+
+The CLI accepts JSON receipt lists, JSON objects containing a `chain` list, or
+JSONL chains. Destination files must be new. Invalid chains produce an INVALID
+report and a nonzero exit; malformed files fail before a report is produced.
+The JSON includes the full terminal hashes, the full master hash over their
+sorted mapping, and `report_sha256` over canonical JSON without that field.
+
+`report_status=VALID` means **chain integrity only**. The separate coverage field
+lists missing harnesses, and `wave1_acceptance=NOT_EVALUATED` deliberately does
+not close external evidence gates. Even all four intact chains can contain
+synthetic measurements. Input provenance labels appear in the table; unknown
+origins remain `UNVERIFIED_SOURCE_RECEIPT`. Calibration scores are caller-input
+measurements, not proof of a particular model execution. These unsigned chains
+need an independently retained terminal anchor to detect a full rehash or a
+valid-prefix truncation. No model authenticity or independent witness is implied.
 
 ```python
 import json, pathlib
@@ -76,7 +97,8 @@ hardware — tracked by each harness's verification-gate issue.
 
 - Python 3.11+, standard library only.
 - No network access, no mutation of source receipts.
-- This tool verifies and formats; it never re-measures.
+- This tool verifies and formats; it never re-measures or closes provider/evidence gates.
+- Explicit invalid, failed, blocked, or unavailable states cannot be promoted by stale metrics.
 
 ## License
 
