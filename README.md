@@ -11,7 +11,7 @@ This package verifies every chain, then consolidates the results into one
 report with a single **master receipt hash** — the chain-of-chains. If any
 source chain is broken, the whole report is `INVALID`. No partial credit.
 
-Version 0.2 reads the actual stdlib `self_hash`/`run` records, calibration's
+Version 0.2.1 reads the actual stdlib `self_hash`/`run` records, calibration's
 `hash`/`payload` records (with its distinct genesis), and legacy flat
 `chain_hash` records. It verifies each format with its native canonicalization;
 it never rewrites or re-signs source records to make them pass.
@@ -28,7 +28,7 @@ it never rewrites or re-signs source records to make them pass.
 ```bash
 pip install -e . pytest
 python -m pytest tests/ -q
-python -m szl_wave1_report --chain szl-retrieval-bench=retrieval.json --chain szl-calibration=calibration.jsonl --output wave.json --markdown wave.md
+python -m szl_wave1_report --chain szl-retrieval-bench=retrieval.json --chain szl-calibration=calibration.jsonl --format bundle --output wave.zip
 ```
 
 The CLI accepts JSON receipt lists, JSON objects containing a `chain` list, or
@@ -36,9 +36,17 @@ JSONL chains. Destination files must be new. Invalid chains produce an INVALID
 report and a nonzero exit; malformed files fail before a report is produced.
 The JSON includes the full terminal hashes, the full master hash over their
 sorted mapping, and `report_sha256` over canonical JSON without that field.
-Both requested outputs are staged first and published without replacement;
-publication failure rolls back only this invocation's files, preserving any
-concurrent writer. This requires ordinary local hard-link support.
+Choose `--format json` (default), `--format markdown`, or `--format bundle`.
+The deterministic ZIP bundle contains `wave-report.json` and `wave-report.md`.
+Exactly one complete artifact is staged, then published without replacement.
+Cleanup never unlinks the exposed destination, even if another writer replaces
+it. Only private staging files are removed. Ordinary local hard-link support
+is required; an unsupported filesystem fails before publication.
+
+The old `--markdown SECOND_PATH` option now fails closed before any output.
+Independent paths cannot provide a portable all-or-none transaction: use a
+single ZIP bundle when JSON and Markdown must publish together. This removes
+the exposed-path rollback race rather than relying on a check-then-delete.
 
 `report_status=VALID` means **chain integrity only**. The separate coverage field
 lists missing harnesses, and `wave1_acceptance=NOT_EVALUATED` deliberately does
