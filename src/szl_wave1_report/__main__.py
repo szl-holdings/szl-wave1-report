@@ -2,37 +2,56 @@
 import argparse
 from dataclasses import asdict, is_dataclass
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
+import zipfile
 
 from .report import aggregate, canonical, render_markdown
 
 
 def publish_outputs(outputs):
-    """Stage every output, then publish without replacing any existing path."""
-    staged = []
-    published = []
+    """Publish exactly one complete artifact; never unlink an exposed path.
+
+    Independent output paths have no portable all-or-none transaction. A ZIP
+    bundle supplies both representations through one atomic no-replace link.
+    """
+    if len(outputs) != 1:
+        raise ValueError("multiple destinations are not atomic; use --format bundle")
+    destination, content = outputs[0]
+    destination = Path(destination)
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".szl-wave-", dir=destination.parent)
+    temporary = Path(temporary_name)
     try:
-        for destination, content in outputs:
-            descriptor, temporary = tempfile.mkstemp(prefix=".szl-wave-", dir=destination.parent)
-            staged.append((Path(temporary), destination))
-            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
-        for temporary, destination in staged:
-            os.link(temporary, destination)  # fails if another process won the destination
-            published.append((temporary, destination))
-    except BaseException:
-        for temporary, destination in reversed(published):
-            if destination.exists() and os.path.samefile(temporary, destination):
-                destination.unlink()  # remove only this invocation's partial publication
-        raise
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, destination)  # fails if another process won the destination
     finally:
-        for temporary, _ in staged:
-            temporary.unlink(missing_ok=True)
+        # Cleanup only our private staging name, never the published name.
+        temporary.unlink(missing_ok=True)
+
+
+def report_bytes(wire, report, format_name):
+    json_bytes = (json.dumps(wire, indent=2, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
+    if format_name == "json":
+        return json_bytes
+    markdown_bytes = render_markdown(report).encode("utf-8")
+    if format_name == "markdown":
+        return markdown_bytes
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_STORED) as archive:
+        for name, content in (("wave-report.json", json_bytes), ("wave-report.md", markdown_bytes)):
+            info = zipfile.ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.create_system = 3
+            info.external_attr = 0o100644 << 16
+            archive.writestr(info, content)
+    return buffer.getvalue()
 
 
 def load_receipts(path):
@@ -53,15 +72,17 @@ def load_receipts(path):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--chain", action="append", required=True, metavar="HARNESS=PATH")
-    parser.add_argument("--output", type=Path, required=True, help="new report JSON; never overwritten")
-    parser.add_argument("--markdown", type=Path, help="optional new Markdown report")
+    parser.add_argument("--output", type=Path, required=True, help="new report artifact; never overwritten")
+    parser.add_argument("--format", choices=("json", "markdown", "bundle"), default="json")
+    parser.add_argument("--markdown", type=Path, help="removed: use --format bundle for JSON plus Markdown")
     args = parser.parse_args(argv)
     try:
-        if args.markdown and args.markdown.resolve() == args.output.resolve():
-            raise ValueError("JSON and Markdown destinations must differ")
-        for destination in (args.output, args.markdown):
-            if destination is not None and destination.exists():
-                raise ValueError(f"refusing to overwrite {destination}")
+        if args.markdown is not None:
+            raise ValueError("separate --markdown output is not atomic; use --format bundle --output report.zip")
+        if args.output.exists():
+            raise ValueError(f"refusing to overwrite {args.output}")
+        if not args.output.parent.is_dir():
+            raise ValueError("output parent directory must already exist")
         chains = {}
         for item in args.chain:
             name, separator, path = item.partition("=")
@@ -72,10 +93,7 @@ def main(argv=None):
         wire = json.loads(json.dumps(report, default=lambda value: asdict(value)
                                      if is_dataclass(value) else str(value), allow_nan=False))
         wire["report_sha256"] = hashlib.sha256(canonical(wire).encode()).hexdigest()
-        outputs = [(args.output, json.dumps(wire, indent=2, ensure_ascii=False, allow_nan=False) + "\n")]
-        if args.markdown:
-            outputs.append((args.markdown, render_markdown(report)))
-        publish_outputs(outputs)
+        publish_outputs([(args.output, report_bytes(wire, report, args.format))])
         print(json.dumps({"report_status": report["report_status"],
                           "report_sha256": wire["report_sha256"],
                           "output": str(args.output)}))

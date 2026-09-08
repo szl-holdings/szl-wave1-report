@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import zipfile
 
 import pytest
 
@@ -98,8 +99,7 @@ def test_cli_jsonl_and_output_receipt_no_overwrite(tmp_path):
     source = tmp_path / "calibration.jsonl"
     source.write_text(json.dumps(calibration()) + "\n", encoding="utf-8")
     output = tmp_path / "report.json"
-    markdown = tmp_path / "report.md"
-    args = ["--chain", f"szl-calibration={source}", "--output", str(output), "--markdown", str(markdown)]
+    args = ["--chain", f"szl-calibration={source}", "--output", str(output)]
     assert main(args) == 0
     body = json.loads(output.read_text(encoding="utf-8"))
     digest = body.pop("report_sha256")
@@ -161,27 +161,98 @@ def test_unknown_identity_does_not_become_verified_coverage():
     assert len(report["unverified_harness_identities"]) == 4
 
 
-def test_missing_markdown_parent_leaves_no_partial_output(tmp_path):
+def test_multiple_destinations_fail_before_publication(tmp_path):
     output = tmp_path / "report.json"
-    with pytest.raises(OSError):
+    with pytest.raises(ValueError, match="multiple destinations"):
         publish_outputs([(output, "{}"), (tmp_path / "missing" / "report.md", "report")])
     assert not output.exists()
     assert not list(tmp_path.glob(".szl-wave-*"))
 
 
-def test_second_publication_failure_rolls_back_only_owned_file(tmp_path, monkeypatch):
+def test_concurrent_destination_creation_is_preserved(tmp_path, monkeypatch):
     import os
     original_link = os.link
-    output, markdown = tmp_path / "report.json", tmp_path / "report.md"
+    output = tmp_path / "report.json"
 
     def concurrent_file(source, destination):
-        if destination == markdown:
-            markdown.write_text("another writer", encoding="utf-8")
+        destination.write_text("another writer", encoding="utf-8")
         original_link(source, destination)
 
     monkeypatch.setattr(os, "link", concurrent_file)
     with pytest.raises(FileExistsError):
-        publish_outputs([(output, "{}"), (markdown, "report")])
-    assert not output.exists()
-    assert markdown.read_text(encoding="utf-8") == "another writer"
+        publish_outputs([(output, "{}")])
+    assert output.read_text(encoding="utf-8") == "another writer"
     assert not list(tmp_path.glob(".szl-wave-*"))
+
+
+def test_replacement_after_publication_is_never_deleted(tmp_path, monkeypatch):
+    import os
+    original_link = os.link
+    output = tmp_path / "report.json"
+
+    def replace_published(source, destination):
+        original_link(source, destination)
+        destination.unlink()
+        destination.write_text("concurrent replacement", encoding="utf-8")
+
+    monkeypatch.setattr(os, "link", replace_published)
+    publish_outputs([(output, "{}")])
+    assert output.read_text(encoding="utf-8") == "concurrent replacement"
+    assert not list(tmp_path.glob(".szl-wave-*"))
+
+
+def test_removed_dual_output_cannot_enter_exposed_path_rollback(tmp_path, monkeypatch):
+    import os
+    first, second = tmp_path / "first.json", tmp_path / "second.md"
+    first.write_text("already owned by another writer", encoding="utf-8")
+
+    def must_not_publish(*args):
+        pytest.fail("multi-path invocation reached publication")
+
+    monkeypatch.setattr(os, "link", must_not_publish)
+    with pytest.raises(ValueError):
+        publish_outputs([(first, "{}"), (second, "markdown")])
+    assert first.read_text(encoding="utf-8") == "already owned by another writer"
+    assert not second.exists()
+
+
+def test_missing_and_unwritable_parent_fail_before_exposure(tmp_path, monkeypatch):
+    from szl_wave1_report import __main__ as cli
+    with pytest.raises(OSError):
+        publish_outputs([(tmp_path / "missing" / "report.json", "{}")])
+    def permission_denied(**kwargs):
+        raise PermissionError("parent not writable")
+    monkeypatch.setattr(cli.tempfile, "mkstemp", permission_denied)
+    with pytest.raises(PermissionError):
+        publish_outputs([(tmp_path / "report.json", "{}")])
+    assert not (tmp_path / "report.json").exists()
+
+
+def test_cli_deterministic_bundle_contains_both_representations(tmp_path):
+    source = tmp_path / "source.jsonl"
+    source.write_text(json.dumps(calibration()) + "\n", encoding="utf-8")
+    first, second = tmp_path / "one.zip", tmp_path / "two.zip"
+    for path in (first, second):
+        assert main(["--chain", f"szl-calibration={source}", "--format", "bundle",
+                     "--output", str(path)]) == 0
+    assert first.read_bytes() == second.read_bytes()
+    with zipfile.ZipFile(first) as archive:
+        assert archive.namelist() == ["wave-report.json", "wave-report.md"]
+        wire = json.loads(archive.read("wave-report.json"))
+        digest = wire.pop("report_sha256")
+        assert digest == hashlib.sha256(canonical(wire).encode()).hexdigest()
+        assert wire["master_receipt_hash"].encode() in archive.read("wave-report.md")
+
+
+def test_cli_markdown_only_and_removed_dual_output(tmp_path):
+    source = tmp_path / "source.jsonl"
+    source.write_text(json.dumps(calibration()) + "\n", encoding="utf-8")
+    markdown = tmp_path / "report.md"
+    assert main(["--chain", f"szl-calibration={source}", "--format", "markdown",
+                 "--output", str(markdown)]) == 0
+    assert markdown.read_text(encoding="utf-8").startswith("# SZL Wave 1 report")
+    output = tmp_path / "never-published.json"
+    with pytest.raises(SystemExit):
+        main(["--chain", f"szl-calibration={source}", "--output", str(output),
+              "--markdown", str(tmp_path / "never-published.md")])
+    assert not output.exists()
