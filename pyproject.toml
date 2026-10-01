@@ -10,8 +10,17 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 
+[project.urls]
+Homepage = "https://github.com/szl-holdings/szl-wave1-report"
+Source = "https://github.com/szl-holdings/szl-wave1-report"
+Issues = "https://github.com/szl-holdings/szl-wave1-report/issues"
+Changelog = "https://github.com/szl-holdings/szl-wave1-report/releases"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.szl.release]
+import_names = ["szl_wave1_report"] # wheel top-level import names; the release gate fails if the built wheel differs
