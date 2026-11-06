@@ -130,3 +130,5 @@ hardware — tracked by each harness's verification-gate issue.
 ## License
 
 Apache-2.0 — see `LICENSE`.
+
+Estate on Hugging Face: models, datasets and Spaces are published under the [SZLHOLDINGS](https://huggingface.co/SZLHOLDINGS) org.
