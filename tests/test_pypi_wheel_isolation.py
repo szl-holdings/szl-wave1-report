@@ -76,6 +76,9 @@ class InstalledWheelIsolationTests(TestCase):
             if command[1:3] == ["-m", "venv"]:
                 venv.EnvBuilder(with_pip=False).create(command[-1])
                 return
+            if "pip" in command and "check" in command:
+                # Synthetic fixture dependencies are empty; no real pip is installed.
+                return
             if "pip" in command and "install" in command:
                 # No installer or network: lay out only our own two fixture files.
                 env = Path(command[0]).parents[1]
@@ -86,7 +89,7 @@ class InstalledWheelIsolationTests(TestCase):
                 return
             subprocess.run(command, check=True, text=True, capture_output=True,
                            cwd=checkout, timeout=20, **kwargs)
-            return
+            return None
 
         package = {"name": "shadow-probe", "dir": str(checkout), "environment": "pypi"}
         with mock.patch.object(gate, "sh", side_effect=sh), \
@@ -109,7 +112,7 @@ class InstalledWheelIsolationTests(TestCase):
             self.assertEqual(receipt["package"], "shadow-probe")
             self.assertEqual(receipt["version"], "1.2.3")
             venv_commands = [command for command in commands if "venv-shadow-probe" in command[0]]
-            self.assertEqual(len(venv_commands), 3)
+            self.assertEqual(len(venv_commands), 4)
             self.assertTrue(all(command[1] == "-I" for command in venv_commands))
 
 

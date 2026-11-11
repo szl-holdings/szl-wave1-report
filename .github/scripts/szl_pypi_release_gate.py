@@ -168,6 +168,7 @@ def gate_package(pkg: dict, repo: str, event: str, ref_type: str, ref_name: str,
     sh([sys.executable, "-m", "venv", str(venv)])
     vpy = venv / ("Scripts" if os.name == "nt" else "bin") / "python"
     sh([str(vpy), "-I", "-m", "pip", "install", "--disable-pip-version-check", "-q", str(wheels[0])])
+    sh([str(vpy), "-I", "-m", "pip", "check"])
     sh([str(vpy), "-I", "-c", f"import importlib.metadata as m; assert m.version({pkg['name']!r}) == {version!r}, m.version({pkg['name']!r})"])
     for mod in declared or []:
         sh([str(vpy), "-I", "-c", f"import importlib; importlib.import_module({mod!r})"])
